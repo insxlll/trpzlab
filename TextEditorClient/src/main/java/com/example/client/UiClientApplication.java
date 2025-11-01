@@ -32,11 +32,9 @@ public class UiClientApplication extends JFrame {
     private void initUI() {
         setLayout(new BorderLayout());
 
-        // Content area
         contentArea = new JTextPane();
         add(new JScrollPane(contentArea), BorderLayout.CENTER);
 
-        // Log area
         logArea = new JTextArea();
         logArea.setEditable(false);
         logArea.setPreferredSize(new Dimension(700, 100));
@@ -47,23 +45,19 @@ public class UiClientApplication extends JFrame {
         JMenuBar menuBar = new JMenuBar();
         JMenu fileMenu = new JMenu("Файл");
 
-        // Add New Document menu item at the beginning
         JMenuItem newItem = new JMenuItem("Новий документ");
         JMenuItem saveItem = new JMenuItem("Зберегти");
         JMenuItem openItem = new JMenuItem("Відкрити");
         JMenuItem listItem = new JMenuItem("Показати всі документи");
         JMenuItem deleteItem = new JMenuItem("Видалити");
 
-        // Add action listener for new document
         newItem.addActionListener(e -> createNewDocument());
         saveItem.addActionListener(e -> showSaveDialog());
         openItem.addActionListener(e -> showOpenDialog());
         listItem.addActionListener(e -> listAll());
         deleteItem.addActionListener(e -> showDeleteDialog());
 
-        // Add new document item first
         fileMenu.add(newItem);
-        // Add separator after New Document
         fileMenu.addSeparator();
         fileMenu.add(saveItem);
         fileMenu.add(openItem);
@@ -74,15 +68,13 @@ public class UiClientApplication extends JFrame {
         setJMenuBar(menuBar);
     }
 
-    // Add new method for creating a new document
     private void createNewDocument() {
-        // Check if current document has unsaved changes
-        if (!contentArea.getText().isEmpty()) {
+        if (!contentArea.getText().isEmpty() || (currentTitle != null && !currentTitle.isEmpty())) {
             int result = JOptionPane.showConfirmDialog(this,
                 "Бажаєте зберегти поточний документ?",
                 "Новий документ",
                 JOptionPane.YES_NO_CANCEL_OPTION);
-            
+
             if (result == JOptionPane.YES_OPTION) {
                 showSaveDialog();
             } else if (result == JOptionPane.CANCEL_OPTION) {
@@ -90,17 +82,17 @@ public class UiClientApplication extends JFrame {
             }
         }
 
-        // Clear the content area and reset document properties
         contentArea.setText("");
         currentDocumentId = null;
         currentTitle = null;
         setTitle("Новий документ - Текстовий редактор");
         log("Створено новий документ");
     }
+
     private void showSaveDialog() {
         JDialog dialog = new JDialog(this, "Зберегти документ", true);
         dialog.setLayout(new BorderLayout());
-        
+
         JPanel panel = new JPanel(new GridBagLayout());
         GridBagConstraints c = new GridBagConstraints();
         c.insets = new Insets(4,4,4,4);
@@ -119,7 +111,12 @@ public class UiClientApplication extends JFrame {
         JButton cancelButton = new JButton("Скасувати");
 
         saveButton.addActionListener(e -> {
-            saveDocument(titleField.getText());
+            String title = titleField.getText().trim();
+            if (title.isEmpty()) {
+                JOptionPane.showMessageDialog(dialog, "Назва не може бути порожньою.", "Помилка", JOptionPane.ERROR_MESSAGE);
+                return;
+            }
+            saveDocument(title);
             dialog.dispose();
         });
         cancelButton.addActionListener(e -> dialog.dispose());
@@ -135,22 +132,22 @@ public class UiClientApplication extends JFrame {
     }
 
     private void showOpenDialog() {
-        String id = JOptionPane.showInputDialog(this, 
-            "Введіть id документа:", 
-            "Відкрити документ", 
+        String id = JOptionPane.showInputDialog(this,
+            "Введіть id документа:",
+            "Відкрити документ",
             JOptionPane.QUESTION_MESSAGE);
-        
+
         if (id != null && !id.trim().isEmpty()) {
             openById(id.trim());
         }
     }
 
     private void showDeleteDialog() {
-        String id = JOptionPane.showInputDialog(this, 
-            "Введіть id документа для видалення:", 
-            "Видалити документ", 
+        String id = JOptionPane.showInputDialog(this,
+            "Введіть id документа для видалення:",
+            "Видалити документ",
             JOptionPane.WARNING_MESSAGE);
-        
+
         if (id != null && !id.trim().isEmpty()) {
             if (JOptionPane.showConfirmDialog(this,
                 "Ви справді хочете видалити документ № " + id + "?",
@@ -169,12 +166,32 @@ public class UiClientApplication extends JFrame {
         try {
             String[] content = contentArea.getText().split("\n");
             Document doc = new Document(title, content);
-            String json = objectMapper.writeValueAsString(doc);
-            HttpRequest req = HttpRequest.newBuilder()
-                    .uri(URI.create(SERVER_URL))
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(json))
-                    .build();
+
+            HttpRequest req;
+            if (currentDocumentId != null && !currentDocumentId.isEmpty()) {
+                
+                try {
+                    doc.setId(Long.parseLong(currentDocumentId));
+                } catch (NumberFormatException nfe) {
+                    log("Невірний формат ID для оновлення.");
+                    return;
+                }
+                String json = objectMapper.writeValueAsString(doc);
+                req = HttpRequest.newBuilder()
+                        .uri(URI.create(SERVER_URL + "/" + currentDocumentId))
+                        .header("Content-Type", "application/json")
+                        .PUT(HttpRequest.BodyPublishers.ofString(json))
+                        .build();
+            } else {
+                
+                String json = objectMapper.writeValueAsString(doc);
+                req = HttpRequest.newBuilder()
+                        .uri(URI.create(SERVER_URL))
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString(json))
+                        .build();
+            }
+
             HttpResponse<String> resp = client.send(req, HttpResponse.BodyHandlers.ofString());
             if (resp.statusCode() == 200 || resp.statusCode() == 201) {
                 Document saved = objectMapper.readValue(resp.body(), Document.class);
@@ -182,6 +199,8 @@ public class UiClientApplication extends JFrame {
                 currentTitle = title;
                 setTitle(currentTitle + " - Текстовий редактор");
                 log("Saved: ID=" + saved.getId());
+            } else if (resp.statusCode() == 404) {
+                log("Document not found for update (status=404).");
             } else {
                 log("Error saving (status=" + resp.statusCode() + "): " + resp.body());
             }
@@ -202,8 +221,9 @@ public class UiClientApplication extends JFrame {
                 Document d = objectMapper.readValue(resp.body(), Document.class);
                 currentDocumentId = id;
                 currentTitle = d.getTitle();
-                setTitle(currentTitle + " - Text Editor Client");
-                contentArea.setText(String.join("\n", d.getContent()));
+                setTitle(currentTitle + " - Текстовий редактор");
+                String[] content = d.getContent();
+                contentArea.setText(content == null ? "" : String.join("\n", content));
                 log("Loaded ID=" + d.getId());
             } else {
                 log("Document not found (status=" + resp.statusCode() + ")");
@@ -221,7 +241,11 @@ public class UiClientApplication extends JFrame {
                     .GET()
                     .build();
             HttpResponse<String> resp = client.send(req, HttpResponse.BodyHandlers.ofString());
-            log("List response: " + resp.body());
+            if (resp.statusCode() == 200) {
+                log("All documents: " + resp.body());
+            } else {
+                log("Error listing (status=" + resp.statusCode() + "): " + resp.body());
+            }
         } catch (Exception ex) {
             log("Error listing: " + ex.getMessage());
             ex.printStackTrace();
@@ -243,6 +267,9 @@ public class UiClientApplication extends JFrame {
                     currentTitle = null;
                     setTitle("Новий документ - Текстовий редактор");
                 }
+                log("Deleted ID=" + id);
+            } else {
+                log("Error deleting (status=" + resp.statusCode() + "): " + resp.body());
             }
         } catch (Exception ex) {
             log("Error deleting: " + ex.getMessage());

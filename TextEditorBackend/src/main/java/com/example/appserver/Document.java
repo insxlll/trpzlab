@@ -7,7 +7,7 @@ import jakarta.persistence.*;
 public class Document {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Integer id;
+    private Long id;
 
     @Column(nullable = false, columnDefinition = "VARCHAR(255) DEFAULT 'Новий текстовий документ'")
     private String title;
@@ -22,8 +22,8 @@ public class Document {
         this.content = content;
     }
 
-    public Integer getId() { return id; }
-    public void setId(Integer id) { this.id = id; }
+    public Long getId() { return id; }
+    public void setId(Long id) { this.id = id; }
     public String getTitle() { return title; }
     public void setTitle(String title) { this.title = title; }
     public String[] getContent() { return content; }

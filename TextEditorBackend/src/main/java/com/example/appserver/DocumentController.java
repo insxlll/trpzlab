@@ -13,14 +13,22 @@ public class DocumentController implements IRepository {
     @Autowired
     private DocumentRepository repository;
 
-    // Create or update (if id present)
     @PostMapping
     public Document saveDocument(@RequestBody Document document) {
         System.out.println("[Backend] Save request: " + document.getTitle());
         return repository.save(document);
     }
 
-    // Get by id
+    @PutMapping("/{id}")
+    public ResponseEntity<Document> updateDocument(@PathVariable Long id, @RequestBody Document document) {
+        if (!repository.existsById(id)) {
+            return ResponseEntity.notFound().build();
+        }
+        document.setId(id);
+        Document saved = repository.save(document);
+        return ResponseEntity.ok(saved);
+    }
+
     @GetMapping("/{id}")
     public ResponseEntity<Document> getDocument(@PathVariable Long id) {
         System.out.println("[Backend] Get request for id: " + id);
@@ -29,13 +37,11 @@ public class DocumentController implements IRepository {
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    // List all
     @GetMapping
     public List<Document> listAll() {
         return repository.findAll();
     }
 
-    // Delete
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> delete(@PathVariable Long id) {
         if (repository.existsById(id)) {
