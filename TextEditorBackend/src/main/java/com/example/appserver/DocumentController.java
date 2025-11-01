@@ -8,7 +8,7 @@ import java.util.List;
 
 @RestController
 @RequestMapping("/api/documents")
-public class DocumentController {
+public class DocumentController implements IRepository {
 
     @Autowired
     private DocumentRepository repository;

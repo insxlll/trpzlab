@@ -11,13 +11,13 @@ import java.net.http.HttpResponse;
 
 public class UiClientApplication extends JFrame {
 
-    private static final String SERVER_URL = "http://localhost:8080/api/documents";
+    private static final String SERVER_URL = "http://localhost:8443/api/documents";
     private final HttpClient client = HttpClient.newHttpClient();
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     private JTextField idField;
     private JTextField titleField;
-    private JTextArea contentArea;
+    private JTextPane contentArea;
     private JTextArea logArea;
 
     public UiClientApplication() {
@@ -42,7 +42,7 @@ public class UiClientApplication extends JFrame {
         c.gridx=1; titleField = new JTextField(40); form.add(titleField, c);
 
         c.gridx=0; c.gridy=2; form.add(new JLabel("Content:"), c);
-        c.gridx=1; contentArea = new JTextArea(10,40); form.add(new JScrollPane(contentArea), c);
+        c.gridx=1; contentArea = new JTextPane(); contentArea.setPreferredSize(new Dimension(400, 200)); form.add(new JScrollPane(contentArea), c);
 
         top.add(form, BorderLayout.CENTER);
 
@@ -77,7 +77,8 @@ public class UiClientApplication extends JFrame {
 
     private void saveDocument() {
         try {
-            Document doc = new Document(titleField.getText(), contentArea.getText());
+            String[] content = contentArea.getText().split("\n");
+            Document doc = new Document(titleField.getText(), content);
             String json = objectMapper.writeValueAsString(doc);
             HttpRequest req = HttpRequest.newBuilder()
                     .uri(URI.create(SERVER_URL))
@@ -85,9 +86,13 @@ public class UiClientApplication extends JFrame {
                     .POST(HttpRequest.BodyPublishers.ofString(json))
                     .build();
             HttpResponse<String> resp = client.send(req, HttpResponse.BodyHandlers.ofString());
-            Document saved = objectMapper.readValue(resp.body(), Document.class);
-            idField.setText(String.valueOf(saved.getId()));
-            log("Saved: ID=" + saved.getId());
+            if (resp.statusCode() == 200 || resp.statusCode() == 201) {
+                Document saved = objectMapper.readValue(resp.body(), Document.class);
+                idField.setText(String.valueOf(saved.getId()));
+                log("Saved: ID=" + saved.getId());
+            } else {
+                log("Error saving (status=" + resp.statusCode() + "): " + resp.body());
+            }
         } catch (Exception ex) {
             log("Error saving: " + ex.getMessage());
             ex.printStackTrace();
@@ -109,7 +114,7 @@ public class UiClientApplication extends JFrame {
             if (resp.statusCode() == 200) {
                 Document d = objectMapper.readValue(resp.body(), Document.class);
                 titleField.setText(d.getTitle());
-                contentArea.setText(d.getContent());
+                contentArea.setText(String.join("\n", d.getContent()));
                 log("Loaded ID=" + d.getId());
             } else {
                 log("Document not found (status=" + resp.statusCode() + ")");
@@ -155,8 +160,14 @@ public class UiClientApplication extends JFrame {
 
     public static void main(String[] args) {
         SwingUtilities.invokeLater(() -> {
+            try{
+            UIManager.setLookAndFeel("javax.swing.plaf.nimbus.NimbusLookAndFeel");
             UiClientApplication ui = new UiClientApplication();
             ui.setVisible(true);
+            }
+            catch (ClassNotFoundException | InstantiationException | IllegalAccessException | UnsupportedLookAndFeelException e) {
+                e.printStackTrace();
+            }
         });
     }
 }

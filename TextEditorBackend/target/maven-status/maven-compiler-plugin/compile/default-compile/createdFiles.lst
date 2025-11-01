@@ -1,0 +1,4 @@
+com/example/appserver/AppServerApplication.class
+com/example/appserver/DocumentRepository.class
+com/example/appserver/DocumentController.class
+com/example/appserver/Document.class
