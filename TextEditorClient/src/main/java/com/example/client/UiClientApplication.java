@@ -15,7 +15,7 @@ public class UiClientApplication extends JFrame {
     private final HttpClient client = HttpClient.newHttpClient();
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    private JTextPane contentArea;
+    private JStrategyTextPane contentArea;
     private JTextArea logArea;
     private String currentDocumentId;
     private String currentTitle;
@@ -32,7 +32,7 @@ public class UiClientApplication extends JFrame {
     private void initUI() {
         setLayout(new BorderLayout());
 
-        contentArea = new JTextPane();
+        contentArea = new JStrategyTextPane();
         add(new JScrollPane(contentArea), BorderLayout.CENTER);
 
         logArea = new JTextArea();
@@ -64,7 +64,27 @@ public class UiClientApplication extends JFrame {
         fileMenu.add(listItem);
         fileMenu.add(deleteItem);
 
+        JMenu editMenu = new JMenu("Редагувати");
+        
+        JMenuItem clearItem = new JMenuItem("Очистити текст");
+        JMenuItem lowerCaseItem = new JMenuItem("До нижнього регістру");
+        JMenuItem upperCaseItem = new JMenuItem("До верхнього регістру");
+        JMenuItem sentenceCaseItem = new JMenuItem("З великої літери");
+
+        lowerCaseItem.addActionListener(e -> LowerCaseText());
+        upperCaseItem.addActionListener(e -> UpperCaseText());
+        sentenceCaseItem.addActionListener(e -> SentenceCaseText());
+
+        clearItem.addActionListener(e -> ClearText());
+
+        editMenu.add(clearItem);
+        editMenu.add(lowerCaseItem);
+        editMenu.add(upperCaseItem);
+        editMenu.add(sentenceCaseItem);
+
+
         menuBar.add(fileMenu);
+        menuBar.add(editMenu);
         setJMenuBar(menuBar);
     }
 
@@ -276,7 +296,22 @@ public class UiClientApplication extends JFrame {
             ex.printStackTrace();
         }
     }
-
+    private void ClearText() {
+        contentArea.setTextStrategy(new ClearText());
+        contentArea.executeTextStrategy();
+    }
+    private void LowerCaseText() {
+        contentArea.setTextStrategy(new LowerCaseText());
+        contentArea.executeTextStrategy();
+    }
+    private void UpperCaseText() {
+        contentArea.setTextStrategy(new UpperCaseText());
+        contentArea.executeTextStrategy();
+    }
+    private void SentenceCaseText() {
+        contentArea.setTextStrategy(new SentenceCaseText());
+        contentArea.executeTextStrategy();
+    }
     public static void main(String[] args) {
         SwingUtilities.invokeLater(() -> {
             try {
