@@ -2,3 +2,4 @@
 data/
 TextEditorClient/target/
 TextEditorBackend/target/
+TextEditorClient/target/classes/com/example/client/UiClientApplication.class

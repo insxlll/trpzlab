@@ -3,11 +3,14 @@ package com.example.client;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import javax.swing.*;
+import javax.swing.text.JTextComponent;
 import java.awt.*;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 
 public class UiClientApplication extends JFrame {
 
@@ -17,6 +20,27 @@ public class UiClientApplication extends JFrame {
 
     private JStrategyTextPane contentArea;
     private JTextArea logArea;
+
+    
+    private ObservableDocument currentDocument;
+    private DocumentController documentController;
+    private TextChangeTracker textChangeTracker;
+    private DocumentObserver uiDocumentObserver;
+
+    
+    private JPanel statsPanel;
+    private JLabel wordCountLabel;
+    private JLabel charCountLabel;
+    private DocumentObserver uiStatsObserver;
+
+    
+    private ChangeCounterObserver changeCounterObserver;
+    private UnsavedChangesObserver unsavedChangesObserver;
+    private WordCountObserver wordCountObserver;
+    private VersionHistoryObserver versionHistoryObserver;
+    private AutoSaveObserver autoSaveObserver;
+    private DocumentSaveHandler saveHandler;
+
     private String currentDocumentId;
     private String currentTitle;
 
@@ -27,6 +51,9 @@ public class UiClientApplication extends JFrame {
         setLocationRelativeTo(null);
         initUI();
         createMenuBar();
+
+        
+        initCommandController();
     }
 
     private void initUI() {
@@ -35,10 +62,25 @@ public class UiClientApplication extends JFrame {
         contentArea = new JStrategyTextPane();
         add(new JScrollPane(contentArea), BorderLayout.CENTER);
 
+        
+        statsPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 5));
+        wordCountLabel = new JLabel("Слів: 0");
+        charCountLabel = new JLabel("Символів: 0");
+        statsPanel.add(wordCountLabel);
+        statsPanel.add(Box.createHorizontalStrut(10));
+        statsPanel.add(charCountLabel);
+
+        
+        JPanel bottomPanel = new JPanel();
+        bottomPanel.setLayout(new BorderLayout());
+        bottomPanel.add(statsPanel, BorderLayout.NORTH);
+
         logArea = new JTextArea();
         logArea.setEditable(false);
         logArea.setPreferredSize(new Dimension(700, 100));
-        add(new JScrollPane(logArea), BorderLayout.SOUTH);
+        bottomPanel.add(new JScrollPane(logArea), BorderLayout.CENTER);
+
+        add(bottomPanel, BorderLayout.SOUTH);
     }
 
     private void createMenuBar() {
@@ -65,35 +107,164 @@ public class UiClientApplication extends JFrame {
         fileMenu.add(deleteItem);
 
         JMenu editMenu = new JMenu("Редагувати");
-        
+
         JMenuItem clearItem = new JMenuItem("Очистити текст");
-        JMenuItem lowerCaseItem = new JMenuItem("До нижнього регістру");
+       /*/ JMenuItem lowerCaseItem = new JMenuItem("До нижнього регістру");
         JMenuItem upperCaseItem = new JMenuItem("До верхнього регістру");
-        JMenuItem sentenceCaseItem = new JMenuItem("З великої літери");
+        JMenuItem sentenceCaseItem = new JMenuItem("З великої літери"); */
 
-        lowerCaseItem.addActionListener(e -> LowerCaseText());
-        upperCaseItem.addActionListener(e -> UpperCaseText());
-        sentenceCaseItem.addActionListener(e -> SentenceCaseText());
+        
+        clearItem.addActionListener(e -> {
+            if (textChangeTracker != null) textChangeTracker.captureNow();
+            documentController.clearDocument();
+            if (textChangeTracker != null) textChangeTracker.updateTextFromController();
+        });
 
-        clearItem.addActionListener(e -> ClearText());
+        
 
         editMenu.add(clearItem);
-        editMenu.add(lowerCaseItem);
+       /*/ editMenu.add(lowerCaseItem);
         editMenu.add(upperCaseItem);
-        editMenu.add(sentenceCaseItem);
+        editMenu.add(sentenceCaseItem);*/
 
+        
+        JMenuItem undoItem = new JMenuItem("Скасувати");
+        JMenuItem redoItem = new JMenuItem("Повторити");
+        JMenuItem findReplaceItem = new JMenuItem("Знайти та замінити");
+
+        undoItem.addActionListener(e -> performUndo());
+        redoItem.addActionListener(e -> performRedo());
+        findReplaceItem.addActionListener(e -> performFindReplace());
+
+        
+        JMenuItem restoreLastVersion = new JMenuItem("Відновити останню локальну версію");
+        restoreLastVersion.addActionListener(e -> {
+            if (versionHistoryObserver != null && currentDocument != null) {
+                String restored = versionHistoryObserver.restoreLast(currentDocument);
+                if (restored != null) {
+                    
+                    if (textChangeTracker != null) textChangeTracker.updateTextFromController();
+                    log("Restored last local version.");
+                } else {
+                    log("No local versions to restore.");
+                }
+            }
+        });
+
+        editMenu.addSeparator();
+        editMenu.add(undoItem);
+        editMenu.add(redoItem);
+        editMenu.addSeparator();
+        editMenu.add(findReplaceItem);
+        editMenu.addSeparator();
+        editMenu.add(restoreLastVersion);
 
         menuBar.add(fileMenu);
         menuBar.add(editMenu);
         setJMenuBar(menuBar);
     }
 
+    
+    private void unregisterObservers() {
+        if (currentDocument == null) return;
+        if (uiDocumentObserver != null) currentDocument.removeObserver(uiDocumentObserver);
+        if (uiStatsObserver != null) currentDocument.removeObserver(uiStatsObserver);
+        if (changeCounterObserver != null) currentDocument.removeObserver(changeCounterObserver);
+        if (unsavedChangesObserver != null) currentDocument.removeObserver(unsavedChangesObserver);
+        if (wordCountObserver != null) currentDocument.removeObserver(wordCountObserver);
+        if (versionHistoryObserver != null) currentDocument.removeObserver(versionHistoryObserver);
+        if (autoSaveObserver != null) {
+            currentDocument.removeObserver(autoSaveObserver);
+            autoSaveObserver.shutdown();
+            autoSaveObserver = null;
+        }
+    }
+
+    private void registerObservers() {
+        if (currentDocument == null) return;
+
+        
+        if (changeCounterObserver == null) changeCounterObserver = new ChangeCounterObserver();
+        if (unsavedChangesObserver == null) unsavedChangesObserver = new UnsavedChangesObserver();
+        if (wordCountObserver == null) wordCountObserver = new WordCountObserver();
+        if (versionHistoryObserver == null) versionHistoryObserver = new VersionHistoryObserver(20);
+
+        
+        if (saveHandler == null) {
+            saveHandler = document -> {
+                
+                String titleToSave = currentTitle != null && !currentTitle.isBlank()
+                        ? currentTitle
+                        : "Автозбережено " + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
+                
+                SwingUtilities.invokeLater(() -> {
+                    try {
+                        
+                        if (textChangeTracker != null) textChangeTracker.captureNow();
+                        saveDocument(titleToSave);
+                        
+                        if (unsavedChangesObserver != null) unsavedChangesObserver.markSaved();
+                    } catch (Exception ex) {
+                        log("Auto-save error: " + ex.getMessage());
+                        ex.printStackTrace();
+                    }
+                });
+            };
+        }
+
+        
+        uiDocumentObserver = event -> SwingUtilities.invokeLater(() -> {
+            if (textChangeTracker != null) textChangeTracker.updateTextFromController();
+            log("Document event: " + event.getType());
+        });
+
+        
+        uiStatsObserver = event -> SwingUtilities.invokeLater(() -> {
+            if (event.getType() == DocumentEvent.Type.CONTENT_CHANGED || event.getType() == DocumentEvent.Type.CLEARED) {
+                String text = event.getNewText() != null ? event.getNewText() : "";
+                updateStatsFromText(text);
+            }
+        });
+
+        
+        currentDocument.addObserver(uiDocumentObserver);
+        currentDocument.addObserver(uiStatsObserver);
+        currentDocument.addObserver(changeCounterObserver);
+        currentDocument.addObserver(unsavedChangesObserver);
+        currentDocument.addObserver(wordCountObserver);
+        currentDocument.addObserver(versionHistoryObserver);
+
+        
+        if (autoSaveObserver == null) {
+            autoSaveObserver = new AutoSaveObserver(currentDocument, saveHandler, 2000);
+        }
+        currentDocument.addObserver(autoSaveObserver);
+    }
+
+    
+    private void initCommandController() {
+        if (currentDocument == null) {
+            currentDocument = new ObservableDocument("Новий документ", new String[0]);
+        }
+        documentController = new DocumentController(currentDocument);
+        
+        textChangeTracker = new TextChangeTracker((JTextComponent) contentArea, documentController);
+
+        
+        registerObservers();
+
+        
+        textChangeTracker.updateTextFromController();
+        
+        updateStatsFromText(documentController.getText());
+    }
+
     private void createNewDocument() {
         if (!contentArea.getText().isEmpty() || (currentTitle != null && !currentTitle.isEmpty())) {
             int result = JOptionPane.showConfirmDialog(this,
-                "Бажаєте зберегти поточний документ?",
-                "Новий документ",
-                JOptionPane.YES_NO_CANCEL_OPTION);
+                    "Бажаєте зберегти поточний документ?",
+                    "Новий документ",
+                    JOptionPane.YES_NO_CANCEL_OPTION);
 
             if (result == JOptionPane.YES_OPTION) {
                 showSaveDialog();
@@ -102,10 +273,25 @@ public class UiClientApplication extends JFrame {
             }
         }
 
-        contentArea.setText("");
+        
+        unregisterObservers();
+
+        
+        currentDocument = new ObservableDocument("Новий документ", new String[0]);
         currentDocumentId = null;
         currentTitle = null;
         setTitle("Новий документ - Текстовий редактор");
+
+        
+        documentController = new DocumentController(currentDocument);
+        textChangeTracker = new TextChangeTracker((JTextComponent) contentArea, documentController);
+
+        
+        registerObservers();
+
+        
+        contentArea.setText("");
+        updateStatsFromText("");
         log("Створено новий документ");
     }
 
@@ -115,7 +301,7 @@ public class UiClientApplication extends JFrame {
 
         JPanel panel = new JPanel(new GridBagLayout());
         GridBagConstraints c = new GridBagConstraints();
-        c.insets = new Insets(4,4,4,4);
+        c.insets = new Insets(4, 4, 4, 4);
         c.anchor = GridBagConstraints.WEST;
 
         JTextField titleField = new JTextField(30);
@@ -123,8 +309,11 @@ public class UiClientApplication extends JFrame {
             titleField.setText(currentTitle);
         }
 
-        c.gridx=0; c.gridy=0; panel.add(new JLabel("Назва: "), c);
-        c.gridx=1; panel.add(titleField, c);
+        c.gridx = 0;
+        c.gridy = 0;
+        panel.add(new JLabel("Назва: "), c);
+        c.gridx = 1;
+        panel.add(titleField, c);
 
         JPanel buttonPanel = new JPanel();
         JButton saveButton = new JButton("Зберегти");
@@ -136,6 +325,8 @@ public class UiClientApplication extends JFrame {
                 JOptionPane.showMessageDialog(dialog, "Назва не може бути порожньою.", "Помилка", JOptionPane.ERROR_MESSAGE);
                 return;
             }
+            
+            if (textChangeTracker != null) textChangeTracker.captureNow();
             saveDocument(title);
             dialog.dispose();
         });
@@ -153,9 +344,9 @@ public class UiClientApplication extends JFrame {
 
     private void showOpenDialog() {
         String id = JOptionPane.showInputDialog(this,
-            "Введіть id документа:",
-            "Відкрити документ",
-            JOptionPane.QUESTION_MESSAGE);
+                "Введіть id документа:",
+                "Відкрити документ",
+                JOptionPane.QUESTION_MESSAGE);
 
         if (id != null && !id.trim().isEmpty()) {
             openById(id.trim());
@@ -164,15 +355,15 @@ public class UiClientApplication extends JFrame {
 
     private void showDeleteDialog() {
         String id = JOptionPane.showInputDialog(this,
-            "Введіть id документа для видалення:",
-            "Видалити документ",
-            JOptionPane.WARNING_MESSAGE);
+                "Введіть id документа для видалення:",
+                "Видалити документ",
+                JOptionPane.WARNING_MESSAGE);
 
         if (id != null && !id.trim().isEmpty()) {
             if (JOptionPane.showConfirmDialog(this,
-                "Ви справді хочете видалити документ № " + id + "?",
-                "Підтвердити видалення",
-                JOptionPane.YES_NO_OPTION) == JOptionPane.YES_OPTION) {
+                    "Ви справді хочете видалити документ № " + id + "?",
+                    "Підтвердити видалення",
+                    JOptionPane.YES_NO_OPTION) == JOptionPane.YES_OPTION) {
                 deleteById(id.trim());
             }
         }
@@ -184,12 +375,15 @@ public class UiClientApplication extends JFrame {
 
     private void saveDocument(String title) {
         try {
-            String[] content = contentArea.getText().split("\n");
+            
+            if (textChangeTracker != null) textChangeTracker.captureNow();
+
+            String[] content = documentController.getText().split("\n", -1);
             Document doc = new Document(title, content);
 
             HttpRequest req;
             if (currentDocumentId != null && !currentDocumentId.isEmpty()) {
-                
+
                 try {
                     doc.setId(Long.parseLong(currentDocumentId));
                 } catch (NumberFormatException nfe) {
@@ -203,7 +397,7 @@ public class UiClientApplication extends JFrame {
                         .PUT(HttpRequest.BodyPublishers.ofString(json))
                         .build();
             } else {
-                
+
                 String json = objectMapper.writeValueAsString(doc);
                 req = HttpRequest.newBuilder()
                         .uri(URI.create(SERVER_URL))
@@ -215,9 +409,27 @@ public class UiClientApplication extends JFrame {
             HttpResponse<String> resp = client.send(req, HttpResponse.BodyHandlers.ofString());
             if (resp.statusCode() == 200 || resp.statusCode() == 201) {
                 Document saved = objectMapper.readValue(resp.body(), Document.class);
+                
+                unregisterObservers();
+                ObservableDocument od = new ObservableDocument(saved.getTitle(), saved.getContent());
+                od.setId(saved.getId());
+                currentDocument = od;
                 currentDocumentId = String.valueOf(saved.getId());
                 currentTitle = title;
                 setTitle(currentTitle + " - Текстовий редактор");
+
+                
+                documentController = new DocumentController(currentDocument);
+                textChangeTracker = new TextChangeTracker((JTextComponent) contentArea, documentController);
+                registerObservers();
+                textChangeTracker.updateTextFromController();
+
+                
+                if (unsavedChangesObserver != null) unsavedChangesObserver.markSaved();
+
+                
+                updateStatsFromText(documentController.getText());
+
                 log("Saved: ID=" + saved.getId());
             } else if (resp.statusCode() == 404) {
                 log("Document not found for update (status=404).");
@@ -239,11 +451,24 @@ public class UiClientApplication extends JFrame {
             HttpResponse<String> resp = client.send(req, HttpResponse.BodyHandlers.ofString());
             if (resp.statusCode() == 200) {
                 Document d = objectMapper.readValue(resp.body(), Document.class);
+
+                
+                unregisterObservers();
+                ObservableDocument od = new ObservableDocument(d.getTitle(), d.getContent());
+                od.setId(d.getId());
+                currentDocument = od;
                 currentDocumentId = id;
                 currentTitle = d.getTitle();
                 setTitle(currentTitle + " - Текстовий редактор");
-                String[] content = d.getContent();
-                contentArea.setText(content == null ? "" : String.join("\n", content));
+
+                documentController = new DocumentController(currentDocument);
+                textChangeTracker = new TextChangeTracker((JTextComponent) contentArea, documentController);
+                registerObservers();
+                textChangeTracker.updateTextFromController();
+
+                
+                updateStatsFromText(documentController.getText());
+
                 log("Loaded ID=" + d.getId());
             } else {
                 log("Document not found (status=" + resp.statusCode() + ")");
@@ -286,6 +511,7 @@ public class UiClientApplication extends JFrame {
                     currentDocumentId = null;
                     currentTitle = null;
                     setTitle("Новий документ - Текстовий редактор");
+                    updateStatsFromText("");
                 }
                 log("Deleted ID=" + id);
             } else {
@@ -296,22 +522,74 @@ public class UiClientApplication extends JFrame {
             ex.printStackTrace();
         }
     }
-    private void ClearText() {
-        contentArea.setTextStrategy(new ClearText());
-        contentArea.executeTextStrategy();
+
+    
+    private void performUndo() {
+        
+        if (textChangeTracker != null) textChangeTracker.captureNow();
+
+        if (documentController != null && documentController.canUndo()) {
+            documentController.undo();
+            if (textChangeTracker != null) textChangeTracker.updateTextFromController();
+            
+            updateStatsFromText(documentController.getText());
+            log("Undo performed");
+        } else {
+            log("Nothing to undo");
+        }
     }
-    private void LowerCaseText() {
-        contentArea.setTextStrategy(new LowerCaseText());
-        contentArea.executeTextStrategy();
+
+    private void performRedo() {
+        if (textChangeTracker != null) textChangeTracker.captureNow();
+
+        if (documentController != null && documentController.canRedo()) {
+            documentController.redo();
+            if (textChangeTracker != null) textChangeTracker.updateTextFromController();
+            
+            updateStatsFromText(documentController.getText());
+            log("Redo performed");
+        } else {
+            log("Nothing to redo");
+        }
     }
-    private void UpperCaseText() {
-        contentArea.setTextStrategy(new UpperCaseText());
-        contentArea.executeTextStrategy();
+
+    private void performFindReplace() {
+        try {
+            if (textChangeTracker != null) textChangeTracker.captureNow();
+
+            FindReplaceDialog dialog = new FindReplaceDialog(this);
+            dialog.setVisible(true);
+
+            if (dialog.isConfirmed()) {
+                String findText = dialog.getFindText();
+                String replaceText = dialog.getReplaceText();
+                if (findText != null && !findText.isEmpty()) {
+                    documentController.findAndReplace(findText, replaceText != null ? replaceText : "");
+                    if (textChangeTracker != null) textChangeTracker.updateTextFromController();
+                    
+                    updateStatsFromText(documentController.getText());
+                    log("Replaced '" + findText + "' with '" + replaceText + "'");
+                }
+            }
+        } catch (Exception ex) {
+            log("Error in Find&Replace: " + ex.getMessage());
+            ex.printStackTrace();
+        }
     }
-    private void SentenceCaseText() {
-        contentArea.setTextStrategy(new SentenceCaseText());
-        contentArea.executeTextStrategy();
+
+   
+    private void updateStatsFromText(String text) {
+        if (text == null) text = "";
+        final String t = text;
+        SwingUtilities.invokeLater(() -> {
+            int charCount = t.length();
+            String trimmed = t.trim();
+            int wordCount = trimmed.isEmpty() ? 0 : trimmed.split("\\s+").length;
+            wordCountLabel.setText("Слів: " + wordCount);
+            charCountLabel.setText("Символів: " + charCount);
+        });
     }
+
     public static void main(String[] args) {
         SwingUtilities.invokeLater(() -> {
             try {
