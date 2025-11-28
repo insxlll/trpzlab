@@ -15,6 +15,7 @@ import java.time.format.DateTimeFormatter;
 public class UiClientApplication extends JFrame {
 
     private static final String SERVER_URL = "http://localhost:8443/api/documents";
+    private static final String SYNTAX_CHECK_URL = "http://localhost:8443/api/syntax/check";
     private final HttpClient client = HttpClient.newHttpClient();
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -109,9 +110,6 @@ public class UiClientApplication extends JFrame {
         JMenu editMenu = new JMenu("Редагувати");
 
         JMenuItem clearItem = new JMenuItem("Очистити текст");
-       /*/ JMenuItem lowerCaseItem = new JMenuItem("До нижнього регістру");
-        JMenuItem upperCaseItem = new JMenuItem("До верхнього регістру");
-        JMenuItem sentenceCaseItem = new JMenuItem("З великої літери"); */
 
         
         clearItem.addActionListener(e -> {
@@ -120,12 +118,7 @@ public class UiClientApplication extends JFrame {
             if (textChangeTracker != null) textChangeTracker.updateTextFromController();
         });
 
-        
-
         editMenu.add(clearItem);
-       /*/ editMenu.add(lowerCaseItem);
-        editMenu.add(upperCaseItem);
-        editMenu.add(sentenceCaseItem);*/
 
         
         JMenuItem undoItem = new JMenuItem("Скасувати");
@@ -159,8 +152,18 @@ public class UiClientApplication extends JFrame {
         editMenu.addSeparator();
         editMenu.add(restoreLastVersion);
 
+        
+        JMenu toolsMenu = new JMenu("Інструменти");
+        
+        JMenuItem checkSyntaxItem = new JMenuItem("Перевірити синтаксис Java");
+        checkSyntaxItem.setAccelerator(KeyStroke.getKeyStroke("control shift C"));
+        checkSyntaxItem.addActionListener(e -> performSyntaxCheck());
+        
+        toolsMenu.add(checkSyntaxItem);
+
         menuBar.add(fileMenu);
         menuBar.add(editMenu);
+        menuBar.add(toolsMenu); 
         setJMenuBar(menuBar);
     }
 
@@ -577,7 +580,125 @@ public class UiClientApplication extends JFrame {
         }
     }
 
-   
+    private void performSyntaxCheck() {
+        try {
+            
+            if (textChangeTracker != null) textChangeTracker.captureNow();
+
+            String code = documentController.getText();
+            
+            if (code == null || code.trim().isEmpty()) {
+                JOptionPane.showMessageDialog(this,
+                    "Немає коду для перевірки. Введіть Java код у редактор.",
+                    "Порожній документ",
+                    JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+
+            log("Початок перевірки синтаксису Java...");
+
+            
+            JDialog loadingDialog = createLoadingDialog();
+            
+            
+            SwingWorker<SyntaxCheckResult, Void> worker = new SwingWorker<>() {
+                @Override
+                protected SyntaxCheckResult doInBackground() throws Exception {
+                    return checkSyntaxOnServer(code);
+                }
+
+                @Override
+                protected void done() {
+                    loadingDialog.dispose();
+                    try {
+                        SyntaxCheckResult result = get();
+                        displaySyntaxCheckResult(result);
+                        
+                        if (result.isSuccess() && !result.hasErrors()) {
+                            log("✅ Перевірка синтаксису завершена: помилок не знайдено");
+                        } else {
+                            log("❌ Перевірка синтаксису завершена: знайдено " + 
+                                result.getErrorCount() + " помилок");
+                        }
+                    } catch (Exception ex) {
+                        log("Помилка при перевірці синтаксису: " + ex.getMessage());
+                        JOptionPane.showMessageDialog(UiClientApplication.this,
+                            "Помилка при перевірці синтаксису:\n" + ex.getMessage(),
+                            "Помилка",
+                            JOptionPane.ERROR_MESSAGE);
+                    }
+                }
+            };
+            
+            worker.execute();
+            loadingDialog.setVisible(true);
+
+        } catch (Exception ex) {
+            log("Error in Syntax Check: " + ex.getMessage());
+            ex.printStackTrace();
+        }
+    }
+
+    private SyntaxCheckResult checkSyntaxOnServer(String code) throws Exception {
+        
+        String jsonRequest = objectMapper.writeValueAsString(
+            new SyntaxCheckRequest(code, "java")
+        );
+
+        
+        HttpRequest req = HttpRequest.newBuilder()
+                .uri(URI.create(SYNTAX_CHECK_URL))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(jsonRequest))
+                .build();
+
+        HttpResponse<String> resp = client.send(req, HttpResponse.BodyHandlers.ofString());
+
+        if (resp.statusCode() == 200) {
+            
+            return objectMapper.readValue(resp.body(), SyntaxCheckResult.class);
+        } else {
+            throw new Exception("Сервер повернув помилку: " + resp.statusCode() + 
+                              "\n" + resp.body());
+        }
+    }
+
+
+    private void displaySyntaxCheckResult(SyntaxCheckResult result) {
+        SwingUtilities.invokeLater(() -> {
+            SyntaxCheckDialog dialog = new SyntaxCheckDialog(this);
+            dialog.displayResult(result);
+            dialog.setVisible(true);
+        });
+    }
+
+
+    private JDialog createLoadingDialog() {
+        JDialog dialog = new JDialog(this, "Перевірка синтаксису", true);
+        dialog.setLayout(new BorderLayout(10, 10));
+        dialog.setSize(300, 100);
+        dialog.setLocationRelativeTo(this);
+        dialog.setDefaultCloseOperation(JDialog.DO_NOTHING_ON_CLOSE);
+
+        JPanel panel = new JPanel();
+        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
+        panel.setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
+
+        JLabel label = new JLabel("Виконується перевірка синтаксису...");
+        label.setAlignmentX(Component.CENTER_ALIGNMENT);
+        
+        JProgressBar progressBar = new JProgressBar();
+        progressBar.setIndeterminate(true);
+        progressBar.setAlignmentX(Component.CENTER_ALIGNMENT);
+
+        panel.add(label);
+        panel.add(Box.createVerticalStrut(10));
+        panel.add(progressBar);
+
+        dialog.add(panel);
+        return dialog;
+    }
+
     private void updateStatsFromText(String text) {
         if (text == null) text = "";
         final String t = text;
@@ -588,6 +709,33 @@ public class UiClientApplication extends JFrame {
             wordCountLabel.setText("Слів: " + wordCount);
             charCountLabel.setText("Символів: " + charCount);
         });
+    }
+
+
+    private static class SyntaxCheckRequest {
+        private String code;
+        private String language;
+
+        public SyntaxCheckRequest(String code, String language) {
+            this.code = code;
+            this.language = language;
+        }
+
+        public String getCode() {
+            return code;
+        }
+
+        public void setCode(String code) {
+            this.code = code;
+        }
+
+        public String getLanguage() {
+            return language;
+        }
+
+        public void setLanguage(String language) {
+            this.language = language;
+        }
     }
 
     public static void main(String[] args) {
